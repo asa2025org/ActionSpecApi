@@ -1,0 +1,27 @@
+name: "Weather Forecast API"
+description: "Sample ASA-powered Weather Forecast API"
+version: "1.0.0"
+
+endpoints:
+  - path: "/weatherforecast"
+    method: GET
+    description: "Get weather forecast for the next 5 days"
+    steps:
+      #- name: "static-data"
+      #  uses: "asa.modules/echo@1.0.0"
+      #  with: 
+      #    message: "hot"
+
+      - name: "generate-weather-data"
+        uses: "WeatherForecastApi/weather-generator@1.0.0"
+        with:
+          days: 3
+          min-temp: 20
+          max-temp: 40
+      
+      - name: "format-response"
+        uses: "asa.modules/response-formatter@1.0.0"
+        with:
+          statusCode: 200
+          contentType: "application/json"
+          body: "${{ steps.generate-weather-data.data }}"
