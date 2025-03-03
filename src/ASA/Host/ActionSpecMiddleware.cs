@@ -9,19 +9,27 @@ namespace ASA.Host
         private readonly RequestDelegate _next;
         private readonly ActionSpec _spec;
         private readonly IStepExecutor _executor;
+        private readonly Dictionary<string, EndpointSpec> _endpointCache = new Dictionary<string, EndpointSpec>();
 
         public ActionSpecMiddleware(RequestDelegate next, ActionSpec spec, IStepExecutor executor)
         {
             _next = next;
             _spec = spec;
             _executor = executor;
+
+            // Build endpoint cache
+            foreach (var endpoint in _spec.Endpoints)
+            {
+                var key = $"{endpoint.Path}-{endpoint.Method}";
+                _endpointCache[key] = endpoint;
+            }
         }
 
         public async Task InvokeAsync(HttpContext context)
         {
             // Find matching endpoint
-            var endpoint = FindMatchingEndpoint(context, _spec);
-            if (endpoint == null)
+            var key = $"{context.Request.Path.Value}-{context.Request.Method}";
+            if (!_endpointCache.TryGetValue(key, out var endpoint))
             {
                 await _next(context);
                 return;
@@ -39,20 +47,6 @@ namespace ASA.Host
 
             // Execute steps
             await _executor.ExecuteAsync(endpoint.Steps, executionContext);
-        }
-
-        private EndpointSpec FindMatchingEndpoint(HttpContext context, ActionSpec spec)
-        {
-            // Simple matching logic - in real implementation would be more sophisticated
-            foreach (var endpoint in spec.Endpoints)
-            {
-                if (context.Request.Path.Value.Equals(endpoint.Path, StringComparison.OrdinalIgnoreCase) &&
-                    context.Request.Method.Equals(endpoint.Method, StringComparison.OrdinalIgnoreCase))
-                {
-                    return endpoint;
-                }
-            }
-            return null;
         }
     }
 }
