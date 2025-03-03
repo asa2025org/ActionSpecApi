@@ -1,6 +1,7 @@
 using ASA.Core.Models;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
+using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
@@ -15,6 +16,7 @@ namespace ASA.Core
     {
         private readonly ILogger<ContextProvider> _logger;
         private static readonly Regex ExpressionPattern = new Regex(@"\$\{\{\s*([^}]+)\s*\}\}", RegexOptions.Compiled);
+        private readonly ConcurrentDictionary<string, object> _cache = new ConcurrentDictionary<string, object>();
 
         public ContextProvider(ILogger<ContextProvider> logger)
         {
@@ -28,31 +30,42 @@ namespace ASA.Core
                 return null;
             }
 
+            var cacheKey = $"{expression}-{context.GetHashCode()}"; // Create a unique cache key
+            if (_cache.TryGetValue(cacheKey, out var cachedResult))
+            {
+                return cachedResult;
+            }
+
+            object result;
             // Check if the expression is a template with embedded expressions
             if (expression.Contains("${{"))
             {
-                return ResolveTemplate(expression, context);
+                result = ResolveTemplate(expression, context);
             }
-
-            // Simple path resolution
-            var parts = expression.Split('.');
-            if (parts.Length < 2)
+            else
             {
-                _logger.LogWarning("Invalid expression: {Expression}", expression);
-                return null;
+                // Simple path resolution
+                var parts = expression.Split('.');
+                if (parts.Length < 2)
+                {
+                    _logger.LogWarning("Invalid expression: {Expression}", expression);
+                    return null;
+                }
+
+                var rootName = parts[0];
+                var path = string.Join(".", parts.Skip(1));
+
+                result = rootName switch
+                {
+                    "steps" => ResolveStepPath(path, context),
+                    "request" => ResolveRequestPath(path, context),
+                    "config" => ResolveConfigPath(path, context),
+                    "env" => ResolveEnvironmentPath(path),
+                    _ => null
+                };
             }
-
-            var rootName = parts[0];
-            var path = string.Join(".", parts.Skip(1));
-
-            return rootName switch
-            {
-                "steps" => ResolveStepPath(path, context),
-                "request" => ResolveRequestPath(path, context),
-                "config" => ResolveConfigPath(path, context),
-                "env" => ResolveEnvironmentPath(path),
-                _ => null
-            };
+            _cache.TryAdd(cacheKey, result);
+            return result;
         }
 
         private string ResolveTemplate(string template, AsaExecutionContext context)
@@ -61,7 +74,7 @@ namespace ASA.Core
             {
                 var innerExpression = match.Groups[1].Value.Trim();
                 var result = ResolveExpression(innerExpression, context);
-                return result != null ? JsonSerializer.Serialize(result) : "{}";
+                return result is string stringResult ? stringResult : result != null ? JsonSerializer.Serialize(result) : "{}";
             });
         }
 
@@ -153,6 +166,8 @@ namespace ASA.Core
             return Environment.GetEnvironmentVariable(path);
         }
 
+        private static readonly ConcurrentDictionary<Type, ConcurrentDictionary<string, System.Reflection.PropertyInfo>> _propertyCache = new ConcurrentDictionary<Type, ConcurrentDictionary<string, System.Reflection.PropertyInfo>>();
+
         private object NavigateObjectPath(object obj, string path)
         {
             if (obj == null || string.IsNullOrEmpty(path))
@@ -195,7 +210,10 @@ namespace ASA.Core
                 else
                 {
                     // Try reflection for regular objects
-                    var property = current.GetType().GetProperty(part);
+                    var type = current.GetType();
+                    var property = _propertyCache.GetOrAdd(type, t => new ConcurrentDictionary<string, System.Reflection.PropertyInfo>())
+                        .GetOrAdd(part, p => type.GetProperty(p));
+
                     if (property != null)
                     {
                         current = property.GetValue(current);
